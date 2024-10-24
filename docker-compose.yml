@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  app:
+    build: . # Xây dựng từ Dockerfile trong thư mục hiện tại
+    ports:
+      - "3000:3000" # Cổng mà ứng dụng sẽ lắng nghe
+    volumes:
+      - ./static:/app/static # Kết nối thư mục static
+    environment:
+      - NODE_ENV=production
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - DATABASE_USERNAME=postgres
+      - DATABASE_PASSWORD=123456
+      - DATABASE_NAME=mydatabase
+      # Biến môi trường cho proxy
+      - PROXY_HOST=${PROXY_HOST}
+      - PROXY_PORT=${PROXY_PORT}
+      - PROXY_USERNAME=${PROXY_USERNAME}
+      - PROXY_PASSWORD=${PROXY_PASSWORD}
+    depends_on:
+      - db # Đảm bảo ứng dụng khởi chạy sau khi database đã sẵn sàng
+
+  db:
+    image: postgres # Sử dụng image chính thức của PostgreSQL
+    ports:
+      - '5432:5432' # Cổng mà PostgreSQL sẽ lắng nghe
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=123456
+      - POSTGRES_DB=mydatabase
+    volumes:
+      - pgdata:/var/lib/postgresql/data # Lưu dữ liệu của PostgreSQL vào volume để dữ liệu không bị mất khi container bị xóa
+
+volumes:
+  pgdata: # Volume dùng để lưu trữ dữ liệu của PostgreSQL
+    driver: local
