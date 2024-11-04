@@ -5,36 +5,56 @@ import * as ytdl from 'ytdl-core';
 import * as ytpl from 'ytpl';
 import * as fs from 'fs';
 import * as path from 'path';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import { v4 as uuidv4 } from 'uuid';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { VideoInfo } from './entities/video_info.entity';
-import { PlaylistVideos } from './entities/playlist_video.entity'; // Đường dẫn tới entity VideoInfo
+import { PlaylistVideos } from './entities/playlist_video.entity';
 
 @Injectable()
 export class YoutubeService {
-  private proxyUrl: string;
+  private readonly proxyUrl: string;
   private readonly TEMP_DIR = 'static/temp';
   private readonly DELETE_AFTER_MS = 60000;
   private readonly RETRY_DELAY = 10000;
   private readonly MAX_RETRIES = 3;
 
   constructor(
-    @InjectRepository(VideoInfo) // Tiêm VideoInfoRepository
+    @InjectRepository(VideoInfo)
     private videoInfoRepository: Repository<VideoInfo>,
     @InjectRepository(PlaylistVideos)
     private readonly playlistVideosRepository: Repository<PlaylistVideos>,
   ) {
-    const proxyHost = process.env.PROXY_HOST;
-    const proxyPort = process.env.PROXY_PORT;
-    const proxyUsername = process.env.PROXY_USERNAME;
-    const proxyPassword = process.env.PROXY_PASSWORD;
-    this.proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyPort}`;
 
+     // Cấu hình proxy với Nginx
+     const proxyHost = process.env.PROXY_HOST || 'nginx-proxy';
+     const proxyPort = process.env.PROXY_PORT || '80';
+     const proxyUsername = process.env.PROXY_USERNAME;
+     const proxyPassword = process.env.PROXY_PASSWORD;
+     
+     // Format URL proxy
+     this.proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyPort}`;
+
+    // Tạo thư mục tạm nếu chưa tồn tại
     if (!fs.existsSync(this.TEMP_DIR)) {
       fs.mkdirSync(this.TEMP_DIR, { recursive: true });
     }
   }
 
+  private getProxyConfig() {
+    const proxy = `http://${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}@${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
+    return {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': '*/*',
+        'Connection': 'keep-alive',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}`).toString('base64')
+      },
+      httpsAgent: new HttpsProxyAgent(proxy), // Sử dụng HttpsProxyAgent để cấu hình proxy
+    };
+  }
+
+
+  
   // Hàm để lấy thông tin video từ URL
   async getVideoInfo(url: string) {
     try {
@@ -86,11 +106,12 @@ export class YoutubeService {
           console.error(`Download failed for ${filePath}:`, error);
         });
 
-      setTimeout(() => {
-        fs.unlink(filePath, (err) => {
-          if (err) console.error('Error deleting temp file:', err);
-        });
-      }, this.DELETE_AFTER_MS);
+     // Xóa file sau một khoảng thời gian
+     setTimeout(() => {
+      fs.unlink(filePath, (err) => {
+        if (err) console.error('Error deleting temp file:', err);
+      });
+    }, this.DELETE_AFTER_MS);
 
       return data;
     } catch (error) {
@@ -111,16 +132,16 @@ export class YoutubeService {
   // Hàm thêm retry logic để lấy thông tin video
   private async getVideoInfoWithRetry(url: string, attempt = 1): Promise<ytdl.videoInfo> {
     try {
-      return await ytdl.getBasicInfo(url); // Lấy thông tin cơ bản của video
+      return await ytdl.getBasicInfo(url, {
+        requestOptions: this.getProxyConfig()
+      });
     } catch (error) {
-      // Nếu gặp lỗi rate limiting (429), thử lại với delay
       if (error.statusCode === 429 && attempt <= this.MAX_RETRIES) {
         console.log(`Rate limited, retrying in ${this.RETRY_DELAY / 1000} seconds... (Attempt ${attempt})`);
-        await this.delay(this.RETRY_DELAY); // Chờ trước khi thử lại
-        return this.getVideoInfoWithRetry(url, attempt + 1); // Thử lại lần nữa
-      } else {
-        throw error; // Nếu không phải lỗi 429 hoặc quá số lần retry, ném lỗi
+        await this.delay(this.RETRY_DELAY);
+        return this.getVideoInfoWithRetry(url, attempt + 1);
       }
+      throw error;
     }
   }
 
@@ -133,68 +154,66 @@ export class YoutubeService {
   private async downloadAsMp3(url: string, outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const stream = ytdl(url, {
-        quality: 'highestaudio', // Chỉ tải âm thanh chất lượng cao nhất
-        filter: 'audioonly', // Chỉ lấy phần âm thanh
+        quality: 'highestaudio',
+        filter: 'audioonly',
+        requestOptions: this.getProxyConfig()
       });
 
-      // Lưu dữ liệu vào file MP3
       stream.pipe(fs.createWriteStream(outputPath))
         .on('finish', () => {
           console.log(`Downloaded and saved to ${outputPath}`);
-          resolve(); // Hoàn thành download
+          resolve();
         })
         .on('error', (error) => {
           console.error('Download error:', error);
-          reject(new Error('Failed to download audio')); // Xử lý lỗi khi tải về
+          reject(new Error('Failed to download audio'));
         });
     });
   }
 
-  // Hàm để lấy danh sách video từ playlist và lưu vào cơ sở dữ liệu
-  async getVideosFromPlaylist(playlistUrl: string) {
-    try {
-      const playlist = await this.getPlaylistWithRetry(playlistUrl); // Lấy thông tin playlist với retry logic
-      const videoPromises = playlist.items.map((item) => this.saveVideoFromPlaylist(item)); // Lưu từng video vào cơ sở dữ liệu
+// Hàm để lấy danh sách video từ playlist và lưu vào cơ sở dữ liệu
+async getVideosFromPlaylist(playlistUrl: string) {
+  try {
+    const playlist = await this.getPlaylistWithRetry(playlistUrl);
+    const videoPromises = playlist.items.map((item) => this.saveVideoFromPlaylist(item));
 
-      await Promise.all(videoPromises); // Chờ tất cả các video được lưu thành công
+    await Promise.all(videoPromises);
 
-      return {
-        message: 'Videos saved successfully', // Trả về thông điệp thành công
-      };
-    } catch (error) {
-      console.error('Error fetching playlist videos:', error.message);
-      throw new HttpException(
-        error.message || 'Failed to fetch playlist videos',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+    return {
+      message: 'Videos saved successfully',
+    };
+  } catch (error) {
+    console.error('Error fetching playlist videos:', error.message);
+    throw new HttpException(
+      error.message || 'Failed to fetch playlist videos',
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
   }
+}
 
-  // Hàm lưu thông tin video từ playlist vào cơ sở dữ liệu
-  private async saveVideoFromPlaylist(videoData: any): Promise<PlaylistVideos> {
+// Updated method to use proxy for playlist fetching
+private async getPlaylistWithRetry(playlistUrl: string, attempt = 1): Promise<ytpl.Result> {
+  try {
+    return await ytpl(playlistUrl, {
+      requestOptions: this.getProxyConfig() // Sử dụng cấu hình proxy ở đây
+    });
+  } catch (error) {
+    if (error.statusCode === 429 && attempt <= this.MAX_RETRIES) {
+      console.log(`Rate limited on playlist, retrying in ${this.RETRY_DELAY / 1000} seconds... (Attempt ${attempt})`);
+      await this.delay(this.RETRY_DELAY);
+      return this.getPlaylistWithRetry(playlistUrl, attempt + 1);
+    }
+    throw error;
+  }
+}
+
+
+   // Hàm lưu thông tin video từ playlist vào cơ sở dữ liệu
+   private async saveVideoFromPlaylist(videoData: any): Promise<PlaylistVideos> {
     const playlistVideo = this.playlistVideosRepository.create({
       title: videoData.title,
-      short_url: videoData.shortUrl,
+      short_url: videoData.short_url,
     });
     return this.playlistVideosRepository.save(playlistVideo);
   }
-
-
-  // Hàm retry logic khi lấy playlist gặp lỗi rate limiting
-  private async getPlaylistWithRetry(playlistUrl: string, attempt = 1): Promise<ytpl.Result> {
-    try {
-      return await ytpl(playlistUrl, { requestOptions: { agent: new HttpsProxyAgent(this.proxyUrl) } }); // Lấy playlist với proxy
-    } catch (error) {
-      // Nếu gặp lỗi rate limiting (429), thử lại
-      if (error.statusCode === 429 && attempt <= this.MAX_RETRIES) {
-        console.log(`Rate limited on playlist, retrying in ${this.RETRY_DELAY / 1000} seconds... (Attempt ${attempt})`);
-        await this.delay(this.RETRY_DELAY); // Chờ trước khi thử lại
-        return this.getPlaylistWithRetry(playlistUrl, attempt + 1); // Thử lại lần nữa
-      } else {
-        throw error;
-      }
-    }
-  }
-
-  // Các phương thức khác không thay đổi...
 }

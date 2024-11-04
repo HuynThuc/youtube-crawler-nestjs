@@ -1,12 +1,21 @@
 version: '3.8'
-
 services:
-  app:
-    build: . # Xây dựng từ Dockerfile trong thư mục hiện tại
+  nginx-proxy:
+    image: nginx:alpine  
     ports:
-      - "3000:3000" # Cổng mà ứng dụng sẽ lắng nghe
+      - "8080:80"
     volumes:
-      - ./static:/app/static # Kết nối thư mục static
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/auth/.htpasswd:/etc/nginx/auth/.htpasswd:ro
+    networks:
+      - app-network
+    restart: always
+    cap_add:
+      - NET_ADMIN
+  app:
+    build: .
+    ports:
+      - "3000:3000"
     environment:
       - NODE_ENV=production
       - DATABASE_HOST=db
@@ -14,25 +23,32 @@ services:
       - DATABASE_USERNAME=postgres
       - DATABASE_PASSWORD=123456
       - DATABASE_NAME=mydatabase
-      # Biến môi trường cho proxy
-      - PROXY_HOST=${PROXY_HOST}
-      - PROXY_PORT=${PROXY_PORT}
-      - PROXY_USERNAME=${PROXY_USERNAME}
-      - PROXY_PASSWORD=${PROXY_PASSWORD}
+      - PROXY_HOST=nginx-proxy
+      - PROXY_PORT=80
+      - PROXY_USERNAME=your_username
+      - PROXY_PASSWORD=your_password
+    networks:
+      - app-network
     depends_on:
-      - db # Đảm bảo ứng dụng khởi chạy sau khi database đã sẵn sàng
-
+      - nginx-proxy
+      - db
   db:
-    image: postgres # Sử dụng image chính thức của PostgreSQL
+    image: postgres
     ports:
-      - '5432:5432' # Cổng mà PostgreSQL sẽ lắng nghe
+      - '5432:5432'
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=123456
       - POSTGRES_DB=mydatabase
     volumes:
-      - pgdata:/var/lib/postgresql/data # Lưu dữ liệu của PostgreSQL vào volume để dữ liệu không bị mất khi container bị xóa
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
 
 volumes:
-  pgdata: # Volume dùng để lưu trữ dữ liệu của PostgreSQL
+  pgdata:
     driver: local
+
+networks:
+  app-network:
+    driver: bridge

@@ -17,7 +17,7 @@ import { PlaylistVideos } from './youtube/entities/playlist_video.entity';
       username: 'postgres',
       password: '123456',
       database: 'mydatabase',
-      entities: [VideoInfo, PlaylistVideos], // Đảm bảo cả hai entity đều có mặt
+      entities: [VideoInfo, PlaylistVideos], 
       synchronize: true,
     }),
     YoutubeModule,

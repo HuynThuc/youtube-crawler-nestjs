@@ -4,7 +4,7 @@ import { YoutubeService } from './youtube.service';
 import { YoutubeController } from './youtube.controller';
 import { VideoInfo } from './entities/video_info.entity';
 import { PlaylistVideos } from './entities/playlist_video.entity'; // Đường dẫn đến entity VideoInfo
- // Đường dẫn đến entity PlaylistVideos
+
 
 @Module({
   imports: [
